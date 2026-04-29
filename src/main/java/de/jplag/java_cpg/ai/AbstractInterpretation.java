@@ -826,11 +826,17 @@ public class AbstractInterpretation {
             assert memberName.getParent() != null;
             assert !valueStack.isEmpty();
             if (valueStack.getLast() instanceof VoidValue) {
+                IValue voidBase = valueStack.getLast();
                 valueStack.removeLast();
-                de.jplag.java_cpg.ai.variables.Type objectType = new de.jplag.java_cpg.ai.variables.Type(
-                        de.jplag.java_cpg.ai.variables.Type.TypeEnum.OBJECT);    // ToDo: insert right object name
-                valueStack.add(new JavaObject(new AbstractInterpretation(visitedLinesRecorder, removeDeadCode, recordingChanges, ANONYMOUS_THIS_NAME),
-                        objectType));
+                if (voidBase.getParentObject() instanceof IJavaObject specialBase) {
+                    // recover Integer/Math/System/... when the MemberExpression couldn't resolve refersTo
+                    valueStack.add(specialBase);
+                } else {
+                    de.jplag.java_cpg.ai.variables.Type objectType = new de.jplag.java_cpg.ai.variables.Type(
+                            de.jplag.java_cpg.ai.variables.Type.TypeEnum.OBJECT);
+                    valueStack.add(new JavaObject(
+                            new AbstractInterpretation(visitedLinesRecorder, removeDeadCode, recordingChanges, ANONYMOUS_THIS_NAME), objectType));
+                }
             }
             if (!(valueStack.getLast() instanceof IJavaObject) && memberName.getLocalName().equals("equals")) { // special case
                 assert argumentList.size() == 1;
