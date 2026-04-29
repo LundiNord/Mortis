@@ -1,17 +1,5 @@
 package de.jplag.java_cpg.ai;
 
-import static de.jplag.java_cpg.ai.variables.VariableStore.ANONYMOUS_THIS_NAME;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
-
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
-import org.jetbrains.annotations.TestOnly;
-
 import de.fraunhofer.aisec.cpg.graph.BranchingNode;
 import de.fraunhofer.aisec.cpg.graph.Name;
 import de.fraunhofer.aisec.cpg.graph.Node;
@@ -40,6 +28,7 @@ import de.fraunhofer.aisec.cpg.graph.statements.IfStatement;
 import de.fraunhofer.aisec.cpg.graph.statements.ReturnStatement;
 import de.fraunhofer.aisec.cpg.graph.statements.Statement;
 import de.fraunhofer.aisec.cpg.graph.statements.SwitchStatement;
+import de.fraunhofer.aisec.cpg.graph.statements.ThrowExpression;
 import de.fraunhofer.aisec.cpg.graph.statements.TryStatement;
 import de.fraunhofer.aisec.cpg.graph.statements.WhileStatement;
 import de.fraunhofer.aisec.cpg.graph.statements.expressions.AssignExpression;
@@ -84,6 +73,17 @@ import de.jplag.java_cpg.ai.variables.values.arrays.IJavaArray;
 import de.jplag.java_cpg.ai.variables.values.numbers.INumberValue;
 import de.jplag.java_cpg.cpgUtil.DummyNeighbor;
 import de.jplag.java_cpg.cpgUtil.TransformationUtil;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.TestOnly;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+
+import static de.jplag.java_cpg.ai.variables.VariableStore.ANONYMOUS_THIS_NAME;
 
 /**
  * Abstract Interpretation engine for Java programs. This class is the interface between the CPG Graph and the Abstract
@@ -525,6 +525,10 @@ public class AbstractInterpretation {
             case Block b -> {
                 // assert block is exited
                 if (nextEOG.size() == 1) {          // end of if
+                    if (nextEOG.getFirst() instanceof TryStatement) {
+                        nextNode = nextEOG.getFirst();
+                        break;
+                    }
                     nodeStack.add(nextEOG.getFirst());
                     return null;
                 } else if (nextEOG.isEmpty()) {     // at the end of a while loop or after throw statement
@@ -611,6 +615,7 @@ public class AbstractInterpretation {
                 assert nextEOG.size() == 1;
                 nextNode = nextEOG.getFirst();
             }
+            case ThrowExpression te -> nextNode = walkThrowExpression(te);
             case LambdaExpression le -> {
                 FunctionDeclaration lambda = le.getFunction();
                 // ToDo
@@ -665,7 +670,9 @@ public class AbstractInterpretation {
         if (me.getAssignedTypes().size() != 1) {        // sometimes cpg does not set the type right (mostly with arraylists defined in class)
             expectedCpgType = new de.jplag.java_cpg.ai.variables.Type(de.jplag.java_cpg.ai.variables.Type.TypeEnum.UNKNOWN);
         }
-        if (me.getRefersTo() instanceof FieldDeclaration || me.getRefersTo() instanceof EnumConstantDeclaration) {
+        boolean fieldLike = me.getRefersTo() instanceof FieldDeclaration || me.getRefersTo() instanceof EnumConstantDeclaration
+                || me.getRefersTo() == null;    // CPG >= 10 may leave field/static references unresolved
+        if (fieldLike) {
             if (valueStack.getLast() instanceof IJavaObject javaObject) {
                 nodeStack.removeLast();
                 // like Reference
@@ -673,7 +680,13 @@ public class AbstractInterpretation {
                 assert me.getName().getParent() != null;
                 valueStack.removeLast();    // remove object reference
                 IValue result = javaObject.accessField(me.getName().getLocalName(), expectedCpgType);
-                result.setParentObject(javaObject);
+                if (result == null) {
+                    Value voidResult = new VoidValue();
+                    voidResult.setParentObject(javaObject);
+                    result = voidResult;
+                } else {
+                    result.setParentObject(javaObject);
+                }
                 valueStack.add(result);
             } else {
                 nodeStack.removeLast();
@@ -691,12 +704,10 @@ public class AbstractInterpretation {
             // unknown: look at the last item on the value stack
             IValue value = valueStack.getLast();
             if (value instanceof VoidValue) {
+
                 valueStack.removeLast();    // remove object reference
                 valueStack.add(new VoidValue());
             } else {
-                if (me.getRefersTo() == null) {
-                    throw new CpgErrorException("MemberExpression refers to null");
-                }
                 throw new IllegalStateException("Unexpected value: " + value);
             }
             nodeStack.removeLast();
@@ -722,6 +733,7 @@ public class AbstractInterpretation {
                     // value isn't known
                     value = Value.valueFactory(de.jplag.java_cpg.ai.variables.Type.fromCpgType(ref.getType()));
                 }
+                value.setParentObject(this.object);
                 valueStack.add(value);
             } else {    // unknown reference
                 assert false;
@@ -1001,6 +1013,22 @@ public class AbstractInterpretation {
             assert uop.getNextEOG().size() == 1 || (uop.getNextEOG().size() == 2 && uop.getNextEOG().getLast() instanceof ShortCircuitOperator);
             return uop.getNextEOG().getFirst();
         }
+    }
+
+    private Node walkThrowExpression(@NotNull ThrowExpression te) {
+        // The exception's value (e.g. from a NewExpression) is on the stack; discard it.
+        if (te.getException() != null && !valueStack.isEmpty()) {
+            valueStack.removeLast();
+        }
+        nodeStack.add(te);
+        if (te.getNextEOG().isEmpty()) {    // throw at end of method
+            ReturnStatement nextNode = new ReturnStatement();
+            nextNode.setReturnValue(new Expression() {
+            });
+            return nextNode;
+        }
+        assert te.getNextEOG().size() == 1;
+        return te.getNextEOG().getFirst();
     }
 
     @Nullable
