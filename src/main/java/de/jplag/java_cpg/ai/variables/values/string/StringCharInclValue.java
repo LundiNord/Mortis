@@ -38,6 +38,11 @@ public class StringCharInclValue extends JavaObject implements IStringValue {
      * Characters that may be contained in the string.
      */
     private BitSet maybeContained;
+    /**
+     * The exact string value when known (e.g. from a literal); null when only char-inclusion info is available.
+     */
+    @Nullable
+    private String exactValue;
 
     /**
      * A string value with no information.
@@ -63,6 +68,7 @@ public class StringCharInclValue extends JavaObject implements IStringValue {
         for (char c : value.toCharArray()) {
             certainContained.set(c);
         }
+        exactValue = value;
     }
 
     /**
@@ -86,11 +92,21 @@ public class StringCharInclValue extends JavaObject implements IStringValue {
         this.maybeContained = maybeContained;
     }
 
+    private StringCharInclValue(@Nullable BitSet certainContained, BitSet maybeContained, @Nullable String exactValue) {
+        super(new Type(Type.TypeEnum.STRING));
+        this.certainContained = certainContained;
+        this.maybeContained = maybeContained;
+        this.exactValue = exactValue;
+    }
+
     @Override
     public IValue callMethod(@NotNull String methodName, List<IValue> paramVars, MethodDeclaration method, @NotNull Type expectedType) {
         switch (methodName) {
             case "length" -> {
                 assert paramVars == null || paramVars.isEmpty();
+                if (exactValue != null) {
+                    return Value.valueFactory(exactValue.length());
+                }
                 return Value.valueFactory(new Type(Type.TypeEnum.INT));
             }
             case "parseInt" -> {
@@ -106,6 +122,9 @@ public class StringCharInclValue extends JavaObject implements IStringValue {
             case "startsWith" -> {
                 assert paramVars.size() == 1;
                 assert paramVars.getFirst() instanceof IStringValue;
+                if (exactValue != null && paramVars.getFirst() instanceof StringCharInclValue arg && arg.exactValue != null) {
+                    return Value.valueFactory(exactValue.startsWith(arg.exactValue));
+                }
                 return Value.valueFactory(new Type(Type.TypeEnum.BOOLEAN));
             }
             case "equals" -> {
@@ -171,7 +190,8 @@ public class StringCharInclValue extends JavaObject implements IStringValue {
             newCertain.or(stringValue.certainContained);
             BitSet newMaybe = (BitSet) this.maybeContained.clone();
             newMaybe.or(stringValue.maybeContained);
-            return new StringCharInclValue(newCertain, newMaybe);
+            String newExact = (this.exactValue != null && stringValue.exactValue != null) ? this.exactValue + stringValue.exactValue : null;
+            return new StringCharInclValue(newCertain, newMaybe, newExact);
         }
         return new VoidValue();
     }
@@ -179,7 +199,8 @@ public class StringCharInclValue extends JavaObject implements IStringValue {
     @NotNull
     @Override
     public JavaObject copy() {
-        return new StringCharInclValue(certainContained == null ? null : (BitSet) certainContained.clone(), (BitSet) maybeContained.clone());
+        return new StringCharInclValue(certainContained == null ? null : (BitSet) certainContained.clone(), (BitSet) maybeContained.clone(),
+                exactValue);
     }
 
     @NotNull
@@ -198,10 +219,14 @@ public class StringCharInclValue extends JavaObject implements IStringValue {
         if (other instanceof VoidValue) {
             this.certainContained = new BitSet();
             this.maybeContained = allCharactersBitSet();
+            this.exactValue = null;
             return;
         }
         assert other instanceof StringCharInclValue : "Cannot merge " + getType() + " with " + other.getType();
         StringCharInclValue otherString = (StringCharInclValue) other;
+        if (!Objects.equals(this.exactValue, otherString.exactValue)) {
+            this.exactValue = null;
+        }
         if (this.certainContained == null || otherString.certainContained == null) {
             this.certainContained = null;
         } else {
